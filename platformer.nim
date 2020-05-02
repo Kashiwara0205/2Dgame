@@ -27,6 +27,7 @@ type
 const
   tilesPerRow = 16
   tileSize: Point = (64.cint, 64.cint)
+  windowSize: Point = (1280.cint, 720.cint)
 
   # BodyParts
   backFeetShadow = (x: 192.cint, y: 64.cint, w: 64.cint, h: 32.cint)
@@ -251,6 +252,13 @@ proc physics(game: Game) =
 
   game.map.moveBox(game.player.pos, game.player.vel, playerSize)
 
+proc moveCamera(game: Game) =
+  const halfWin = float(windowSize.x div 2)
+  let
+    leftArea  = game.player.pos.x - halfWin - 100
+    rightArea = game.player.pos.x - halfWin + 100
+  game.camera.x = clamp(game.camera.x, leftArea, rightArea)
+
 proc main = 
   sdlFailIf(not sdl2.init(INIT_VIDEO or INIT_TIMER or INIT_EVENTS)):
     "SDL2 initialization failed"
@@ -289,6 +297,7 @@ proc main =
     let newTick = int((epochTime() - startTime) * 50)
     for tick in lastTick+1 .. newTick:
       game.physics()
+      game.moveCamera()
     lastTick = newTick
 
     game.render()
