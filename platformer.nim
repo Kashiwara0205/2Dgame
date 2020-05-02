@@ -1,4 +1,6 @@
-import sdl2, sdl2/image, basic2d, strutils, times, math, strformat
+import 
+  sdl2, sdl2/image, sdl2/ttf,
+  basic2d, strutils, times, math, strformat
 
 type 
   SDLExecption = object of Exception
@@ -26,6 +28,7 @@ type
     renderer: RendererPtr
     player: Player
     map: Map
+    font: FontPtr
     camera: Vector2d
 
 const
@@ -53,6 +56,13 @@ template sdlFailIf(cond: typed, reason: string) =
   if cond: raise SDLExecption.newException(
       reason & ", SDL error: " & $getError() 
   )
+
+proc formatTime(ticks: int): string =
+  let
+    mins = (ticks div 50) div 60
+    secs = (ticks div 50) mod 60
+    cents = (ticks mod 50) * 2
+  fmt"{mins:02}:{secs:02}:{cents:02}"
 
 proc renderTee(renderer: RendererPtr, texture: TexturePtr, pos: Point2d) =
   let
@@ -105,6 +115,31 @@ proc renderMap(renderer: RendererPtr, map: Map, camera: Vector2d) =
 
     renderer.copy(map.texture, unsafeAddr clip, unsafeAddr dest)
 
+proc renderText(renderer: RendererPtr, font: FontPtr, text: string,
+                x, y, outline: cint, color: Color) =
+  font.setFontOutline(outline)
+  let surface = font.renderUtf8Blended(text.cstring, color)
+  sdlFailIf surface.isNil: "Could not render text surface"
+
+  discard surface.setSurfaceAlphaMod(color.a)
+
+  var source = rect(0, 0, surface.w, surface.h)
+  var dest = rect(x - outline, y - outline, surface.w, surface.h)
+  let texture = renderer.createTextureFromSurface(surface)
+  sdlFailIf texture.isNil: "Could not create texture from rendered text"
+
+  surface.freeSurface()
+
+  renderer.copyEx(texture, source, dest, angle = 0.0, center = nil,
+                  flip = SDL_FLIP_NONE)
+
+  texture.destroy()
+
+proc renderText(game: Game, text: string, x, y: cint, color: Color) =
+  const outlineColor = color(0, 0, 0, 64)
+  game.renderer.renderText(game.font, text, x, y, outline = 2, outlineColor)
+  game.renderer.renderText(game.font, text, x, y, outline = 0, color)
+
 proc restartPlayer(player: Player) =
   player.pos = point2d(170, 500)
   player.vel = vector2d(0, 0)
@@ -146,6 +181,11 @@ proc newMap(texture: TexturePtr, file: string): Map =
 proc newGame(renderer: RendererPtr): Game =
   new result
   result.renderer = renderer
+
+  result.font = openFont("./ttf/DejaVuSans.ttf", 28)
+  sdlFailIf result.font.isNil: "Failed to load font"
+
+  result.renderer = renderer
   result.player = newPlayer(renderer.loadTexture("./image/player.png"))
   result.map = newMap(renderer.loadTexture("./image/grass.png"), "./map/default.map")
 
@@ -171,11 +211,21 @@ proc handleInput(game: Game) =
     else:
       discard
 
-proc render(game: Game) =
+proc render(game: Game, tick: int) =
   # Draw over all drawings of the last frame with the default color
   game.renderer.clear()
   game.renderer.renderTee(game.player.texture, game.player.pos - game.camera)
   game.renderer.renderMap(game.map, game.camera)
+
+  let time = game.player.time
+  const white = color(255, 255, 255, 255)
+  if time.begin >= 0:
+    game.renderText(formatTime(tick - time.begin), 50, 50, white)
+  elif time.finish >= 0:
+    game.renderText("Finished in: " & formatTime(time.finish), 50, 50, white)
+  if time.best >= 0:
+    game.renderText("Best time: " & formatTime(time.best), 50, 100, white)
+
   # Show the result on screen
   game.renderer.present()
 
@@ -274,13 +324,6 @@ proc moveCamera(game: Game) =
     rightArea = game.player.pos.x - halfWin + 100
   game.camera.x = clamp(game.camera.x, leftArea, rightArea)
 
-proc formatTime(ticks: int): string =
-  let
-    mins = (ticks div 50) div 60
-    secs = (ticks div 50) mod 60
-    cents = (ticks mod 50) * 2
-  fmt"{mins:02}:{secs:02}:{cents:02}"
-
 proc logic(game: Game, tick: int) =
   template time: untyped = game.player.time
   case game.map.getTile(game.player.pos)
@@ -292,8 +335,8 @@ proc logic(game: Game, tick: int) =
       time.begin = -1
       if time.best < 0 or time.finish < time.best:
         time.best = time.finish
-      echo "Finished in ", formatTime(time.finish)
   else: discard
+
 
 proc main = 
   sdlFailIf(not sdl2.init(INIT_VIDEO or INIT_TIMER or INIT_EVENTS)):
@@ -307,6 +350,9 @@ proc main =
   sdlFailIf(image.init(imgFlags) != imgFlags):
     "SDL2 Image initialization failed"
   defer: image.quit()
+
+  sdlFailIf(ttfInit() == SdlError): "SDL2 TTF initialization failed"
+  defer: ttfQuit()
 
   let window = createWindow(title = "Our own 2D platformer",
     x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED,
@@ -337,6 +383,6 @@ proc main =
       game.logic(tick)
     lastTick = newTick
 
-    game.render()
+    game.render(lastTick)
 
 main()
