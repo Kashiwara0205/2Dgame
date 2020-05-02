@@ -9,6 +9,14 @@ type
 
   Collision {.pure.} = enum x, y, corner
 
+  CacheLine = object
+    texture: TexturePtr
+    w, h: cint
+ 
+  TextCache = ref object
+    text: string
+    cache: array[2, CacheLine]
+
   Player = ref object
     texture:TexturePtr
     pos: Point2d
@@ -61,8 +69,11 @@ proc formatTime(ticks: int): string =
   let
     mins = (ticks div 50) div 60
     secs = (ticks div 50) mod 60
-    cents = (ticks mod 50) * 2
-  fmt"{mins:02}:{secs:02}:{cents:02}"
+  fmt"{mins:02}:{secs:02}"
+
+proc formatTimeExact(ticks: int): string =
+  let cents = (ticks mod 50) * 2
+  fmt"{formatTime(ticks)}:{cents:02}"
 
 proc renderTee(renderer: RendererPtr, texture: TexturePtr, pos: Point2d) =
   let
@@ -115,30 +126,47 @@ proc renderMap(renderer: RendererPtr, map: Map, camera: Vector2d) =
 
     renderer.copy(map.texture, unsafeAddr clip, unsafeAddr dest)
 
+proc newTextCache: TextCache =
+  new result
+
 proc renderText(renderer: RendererPtr, font: FontPtr, text: string,
-                x, y, outline: cint, color: Color) =
+                x, y, outline: cint, color: Color): CacheLine =
   font.setFontOutline(outline)
   let surface = font.renderUtf8Blended(text.cstring, color)
   sdlFailIf surface.isNil: "Could not render text surface"
 
   discard surface.setSurfaceAlphaMod(color.a)
 
-  var source = rect(0, 0, surface.w, surface.h)
-  var dest = rect(x - outline, y - outline, surface.w, surface.h)
-  let texture = renderer.createTextureFromSurface(surface)
-  sdlFailIf texture.isNil: "Could not create texture from rendered text"
+  result.w = surface.w
+  result.h = surface.h
+  result.texture = renderer.createTextureFromSurface(surface)
+  sdlFailIf result.texture.isNil: "Could not create texture from rendered text"
 
   surface.freeSurface()
 
-  renderer.copyEx(texture, source, dest, angle = 0.0, center = nil,
-                  flip = SDL_FLIP_NONE)
+proc renderText(game: Game, text: string, x, y: cint, color: Color,
+                tc: TextCache) =
+  let passes = [(color: color(0, 0, 0, 64), outline: 2.cint),
+                (color: color, outline: 0.cint)]
 
-  texture.destroy()
+  if text != tc.text:
+    for i in 0..1:
+      tc.cache[i].texture.destroy()
+      tc.cache[i] = game.renderer.renderText(
+        game.font, text, x, y, passes[i].outline, passes[i].color)
+    tc.text = text
 
-proc renderText(game: Game, text: string, x, y: cint, color: Color) =
-  const outlineColor = color(0, 0, 0, 64)
-  game.renderer.renderText(game.font, text, x, y, outline = 2, outlineColor)
-  game.renderer.renderText(game.font, text, x, y, outline = 0, color)
+  for i in 0..1:
+    var source = rect(0, 0, tc.cache[i].w, tc.cache[i].h)
+    var dest = rect(x - passes[i].outline, y - passes[i].outline,
+                    tc.cache[i].w, tc.cache[i].h)
+    game.renderer.copyEx(tc.cache[i].texture, source, dest,
+                         angle = 0.0, center = nil)
+
+template renderTextCached(game: Game, text: string, x, y: cint, color: Color) =
+  block:
+    var tc {.global.} = newTextCache()
+    game.renderText(text, x, y, color, tc)
 
 proc restartPlayer(player: Player) =
   player.pos = point2d(170, 500)
@@ -212,21 +240,21 @@ proc handleInput(game: Game) =
       discard
 
 proc render(game: Game, tick: int) =
-  # Draw over all drawings of the last frame with the default color
   game.renderer.clear()
   game.renderer.renderTee(game.player.texture, game.player.pos - game.camera)
   game.renderer.renderMap(game.map, game.camera)
-
+ 
   let time = game.player.time
   const white = color(255, 255, 255, 255)
   if time.begin >= 0:
-    game.renderText(formatTime(tick - time.begin), 50, 50, white)
+    game.renderTextCached(formatTime(tick - time.begin), 50, 50, white)
   elif time.finish >= 0:
-    game.renderText("Finished in: " & formatTime(time.finish), 50, 50, white)
+    game.renderTextCached("Finished in: " & formatTimeExact(time.finish),
+      50, 50, white)
   if time.best >= 0:
-    game.renderText("Best time: " & formatTime(time.best), 50, 100, white)
+    game.renderTextCached("Best time: " & formatTimeExact(time.best),
+      50, 70, white)
 
-  # Show the result on screen
   game.renderer.present()
 
 proc getTile(map: Map, x, y: int): uint8 =
@@ -336,7 +364,6 @@ proc logic(game: Game, tick: int) =
       if time.best < 0 or time.finish < time.best:
         time.best = time.finish
   else: discard
-
 
 proc main = 
   sdlFailIf(not sdl2.init(INIT_VIDEO or INIT_TIMER or INIT_EVENTS)):
