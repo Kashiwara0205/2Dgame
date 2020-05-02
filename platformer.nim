@@ -1,4 +1,4 @@
-import sdl2, sdl2/image, basic2d, strutils, times, math
+import sdl2, sdl2/image, basic2d, strutils, times, math, strformat
 
 type 
   SDLExecption = object of Exception
@@ -11,11 +11,15 @@ type
     texture:TexturePtr
     pos: Point2d
     vel: Vector2d
+    time: Time
 
   Map = ref object
     texture: TexturePtr
     width, height: int
     tiles: seq[uint8]
+
+  Time = ref object
+    begin, finish, best: int
 
   Game = ref object
     inputs: array[Input, bool]
@@ -104,11 +108,19 @@ proc renderMap(renderer: RendererPtr, map: Map, camera: Vector2d) =
 proc restartPlayer(player: Player) =
   player.pos = point2d(170, 500)
   player.vel = vector2d(0, 0)
+  player.time.begin = -1
+  player.time.finish = -1
+
+proc newTime: Time =
+  new result
+  result.finish = -1
+  result.best = -1
 
 proc newPlayer(texture: TexturePtr): Player =
   new result
-  result.restartPlayer()
   result.texture = texture
+  result.time = newTime()
+  result.restartPlayer()
 
 proc newMap(texture: TexturePtr, file: string): Map =
   new result
@@ -174,6 +186,9 @@ proc getTile(map: Map, x, y: int): uint8 =
     pos = ny * map.width + nx
 
   map.tiles[pos]
+
+proc getTile(map: Map, pos: Point2d): uint8 =
+  map.getTile(pos.x.round.int, pos.y.round.int)
 
 proc isSolid(map: Map, x, y: int): bool =
   map.getTile(x, y) notin {air, start, finish}
@@ -259,6 +274,27 @@ proc moveCamera(game: Game) =
     rightArea = game.player.pos.x - halfWin + 100
   game.camera.x = clamp(game.camera.x, leftArea, rightArea)
 
+proc formatTime(ticks: int): string =
+  let
+    mins = (ticks div 50) div 60
+    secs = (ticks div 50) mod 60
+    cents = (ticks mod 50) * 2
+  fmt"{mins:02}:{secs:02}:{cents:02}"
+
+proc logic(game: Game, tick: int) =
+  template time: untyped = game.player.time
+  case game.map.getTile(game.player.pos)
+  of start:
+    time.begin = tick
+  of finish:
+    if time.begin >= 0:
+      time.finish = tick - time.begin
+      time.begin = -1
+      if time.best < 0 or time.finish < time.best:
+        time.best = time.finish
+      echo "Finished in ", formatTime(time.finish)
+  else: discard
+
 proc main = 
   sdlFailIf(not sdl2.init(INIT_VIDEO or INIT_TIMER or INIT_EVENTS)):
     "SDL2 initialization failed"
@@ -298,6 +334,7 @@ proc main =
     for tick in lastTick+1 .. newTick:
       game.physics()
       game.moveCamera()
+      game.logic(tick)
     lastTick = newTick
 
     game.render()
