@@ -1,4 +1,4 @@
-import sdl2, sdl2/image, basic2d
+import sdl2, sdl2/image, basic2d, strutils
 
 type 
   SDLExecption = object of Exception
@@ -10,11 +10,31 @@ type
     pos: Point2d
     vel: Vector2d
 
+  Map = ref object
+    texture: TexturePtr
+    width, height: int
+    tiles: seq[uint8]
+
   Game = ref object
     inputs: array[Input, bool]
     renderer: RendererPtr
     player: Player
+    map: Map
     camera: Vector2d
+
+const
+  tilesPerRow = 16
+  tileSize: Point = (64.cint, 64.cint)
+
+  # BodyParts
+  backFeetShadow = (x: 192.cint, y: 64.cint, w: 64.cint, h: 32.cint)
+  bodyShadow = (x: 96.cint, y: 0.cint, w: 96.cint, h: 96.cint)
+  frontFeetShadow= (x: 192.cint, y: 64.cint, w: 64.cint, h: 32.cint)
+  backFeet= (x: 192.cint, y: 32.cint, w: 64.cint, h: 32.cint)
+  body= (x: 0.cint, y: 0.cint, w: 96.cint, h: 96.cint)
+  frontFeet= (x: 192.cint, y: 32.cint, w: 64.cint, h: 32.cint)
+  leftEye= (x: 64.cint, y: 96.cint, w: 32.cint, h: 32.cint)
+  rightEye= (x: 64.cint, y: 96.cint, w: 32.cint, h: 32.cint)
 
 template sdlFailIf(cond: typed, reason: string) =
   if cond: raise SDLExecption.newException(
@@ -27,27 +47,50 @@ proc renderTee(renderer: RendererPtr, texture: TexturePtr, pos: Point2d) =
     y = pos.y.cint
 
   var bodyParts: array[8, tuple[source, dest: Rect, flip: cint]] = [
-    (rect(192,  64, 64, 32), rect(x-60,    y, 96, 48),
-     SDL_FLIP_NONE),      # back feet shadow
-    (rect( 96,   0, 96, 96), rect(x-48, y-48, 96, 96),
-     SDL_FLIP_NONE),      # body shadow
-    (rect(192,  64, 64, 32), rect(x-36,    y, 96, 48),
-     SDL_FLIP_NONE),      # front feet shadow
-    (rect(192,  32, 64, 32), rect(x-60,    y, 96, 48),
-     SDL_FLIP_NONE),      # back feet
-    (rect(  0,   0, 96, 96), rect(x-48, y-48, 96, 96),
-     SDL_FLIP_NONE),      # body
-    (rect(192,  32, 64, 32), rect(x-36,    y, 96, 48),
-     SDL_FLIP_NONE),      # front feet
-    (rect( 64,  96, 32, 32), rect(x-18, y-21, 36, 36),
-     SDL_FLIP_NONE),      # left eye
-    (rect( 64,  96, 32, 32), rect( x-6, y-21, 36, 36),
-     SDL_FLIP_HORIZONTAL) # right eye
+    # back feet shadow
+    (rect(backFeetShadow.x, backFeetShadow.y, backFeetShadow.w, backFeetShadow.h), rect(x-60, y, 96, 48),
+     SDL_FLIP_NONE),
+     # body shadow
+    (rect(bodyShadow.x, bodyShadow.y, bodyShadow.w, bodyShadow.h), rect(x-48, y-48, 96, 96),
+     SDL_FLIP_NONE),
+    # front feet shadow
+    (rect(frontFeetShadow.x, frontFeetShadow.y, frontFeetShadow.w, frontFeetShadow.h), rect(x-36, y, 96, 48),
+     SDL_FLIP_NONE),
+    # back feet
+    (rect(backFeet.x, backFeet.y, backFeet.w, backFeet.h), rect(x-60, y, 96, 48),
+     SDL_FLIP_NONE), 
+    # body
+    (rect(body.x, body.y, body.w, body.h), rect(x-48, y-48, 96, 96),
+     SDL_FLIP_NONE),
+    # front feet
+    (rect(frontFeet.x, frontFeet.y, frontFeet.w, frontFeet.h), rect(x-36, y, 96, 48),
+     SDL_FLIP_NONE),
+    # left eye
+    (rect(leftEye.x, leftEye.y, leftEye.w, leftEye.h), rect(x-18, y-21, 36, 36),
+     SDL_FLIP_NONE),
+    # right eye
+    (rect(rightEye.x, rightEye.y, rightEye.w, rightEye.h), rect( x-6, y-21, 36, 36),
+     SDL_FLIP_HORIZONTAL)
   ]
 
   for part in bodyParts.mitems:
     renderer.copyEx(texture, part.source, part.dest, angle=0.0,
                     center = nil, flip = part.flip)
+
+proc renderMap(renderer: RendererPtr, map: Map, camera: Vector2d) =
+  var
+    clip = rect(0, 0, tileSize.x, tileSize.y)
+    dest = rect(0, 0, tileSize.x, tileSize.y)
+
+  for i, tileNr in map.tiles:
+    if tileNr == 0: continue
+
+    clip.x = cint(tileNr mod tilesPerRow) * tileSize.x
+    clip.y = cint(tileNr div tilesPerRow) * tileSize.y
+    dest.x = cint(i mod map.width) * tileSize.x - camera.x.cint
+    dest.y = cint(i div map.width) * tileSize.y - camera.y.cint
+
+    renderer.copy(map.texture, unsafeAddr clip, unsafeAddr dest)
 
 proc restartPlayer(player: Player) =
   player.pos = point2d(170, 500)
@@ -58,10 +101,32 @@ proc newPlayer(texture: TexturePtr): Player =
   result.restartPlayer()
   result.texture = texture
 
+proc newMap(texture: TexturePtr, file: string): Map =
+  new result
+  result.texture = texture
+  result.tiles = @[]
+  for line in file.lines:
+    var width = 0
+    for word in line.split(' '):
+      if word == "": continue
+      let value = parseUInt(word)
+      if value > uint(uint8.high):
+        raise ValueError.newException(
+          "Invalid value " & word & " in map " & file)
+      result.tiles.add value.uint8
+      inc width
+
+    if result.width > 0 and result.width != width:
+      raise ValueError.newException(
+        "Incompatible line length in map " & file)
+    result.width = width
+    inc result.height
+
 proc newGame(renderer: RendererPtr): Game =
   new result
   result.renderer = renderer
   result.player = newPlayer(renderer.loadTexture("./image/player.png"))
+  result.map = newMap(renderer.loadTexture("./image/grass.png"), "./map/default.map")
 
 proc toInput(key: Scancode): Input =
   case key
@@ -89,6 +154,7 @@ proc render(game: Game) =
   # Draw over all drawings of the last frame with the default color
   game.renderer.clear()
   game.renderer.renderTee(game.player.texture, game.player.pos - game.camera)
+  game.renderer.renderMap(game.map, game.camera)
   # Show the result on screen
   game.renderer.present()
 
